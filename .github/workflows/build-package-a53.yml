@@ -1,0 +1,111 @@
+name: Build luci-app-pushbot-A53-APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+
+env:
+  # 修改为 A53 架构 SDK 地址 (以 ImmortalWrt Amlogic/Aarch64 24.10 为例)
+  # 注意：必须使用包含 APK 支持的高版本 SDK
+  SDK_URL: downloads.immortalwrt.org
+  PackageName: luci-app-pushbot
+  PackageSource_URL: https://github.com/MasterOfStar/luci-app-pushbot
+  UPLOAD_Package: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+  whkey: ${{ secrets.WEBHOOK }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04 # 建议升级到 22.04 以适配新 SDK 依赖
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev swig dos2unix
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone SDK
+      working-directory: /workdir
+      run: |
+        wget -qO sdk.tar.xz $SDK_URL
+        mkdir /workdir/openwrt
+        tar xf sdk.tar.xz -C /workdir/openwrt --strip-components 1
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Update & Install feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      run: |
+        cd openwrt
+        # 克隆插件源码
+        git clone $PackageSource_URL package/$PackageName
+        
+        # 核心修改：移除 Makefile 中的 jq 依赖，规避 apk 编译死锁
+        find package/$PackageName -name "Makefile" -exec sed -i 's/+jq//g' {} +
+        
+        # 强制开启 APK 包格式生成
+        make defconfig
+        echo "CONFIG_PACKAGE_FORMAT_APK=y" >> .config
+        echo "CONFIG_PACKAGE_$PackageName=y" >> .config
+        # 显式加入 jq 保证其作为独立包存在
+        echo "CONFIG_PACKAGE_jq=y" >> .config
+
+    - name: Compile the package
+      id: compile
+      run: |
+        cd openwrt
+        make package/$PackageName/compile V=s -j$(nproc)
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Organize files
+      id: organize
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        # APK 文件的存储路径与 IPK 不同，通常在 bin/targets/架构/packages/
+        # 使用 find 命令精准定位生成的 .apk 文件
+        mkdir -p $GITHUB_WORKSPACE/outputs
+        find openwrt/bin/ -type f -name "*.apk" -exec cp -f {} $GITHUB_WORKSPACE/outputs/ \;
+        echo "PackagePath=$GITHUB_WORKSPACE/outputs" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload package to artifact
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success'
+      with:
+        name: ${{ env.PackageName }}-A53-APK
+        path: ${{ env.PackagePath }}/*
+
+    - name: Generate release tag
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")-A53" >> $GITHUB_OUTPUT
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload package to release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success'
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        files: ${{ env.PackagePath }}/*.apk
+        body: |
+          Target: ARMv8 / Cortex-A53
+          Format: APK (Compatible with ImmortalWrt 24.10+)
+          Note: Manual installation requires `apk add --allow-untrusted *.apk`
