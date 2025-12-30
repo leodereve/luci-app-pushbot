@@ -40,9 +40,18 @@ jobs:
     - name: Clone SDK
       working-directory: /workdir
       run: |
-        wget -qO sdk.tar.xz $SDK_URL
-        mkdir /workdir/openwrt
-        tar xf sdk.tar.xz -C /workdir/openwrt --strip-components 1
+        # 使用 -L 处理重定向，-c 断点续传
+        curl -u : -L "$SDK_URL" -o sdk.tar.xz
+        
+        # 检查文件是否为有效的压缩包
+        if ! file sdk.tar.xz | grep -q "XZ compressed data"; then
+          echo "错误：下载的文件不是有效的 XZ 压缩包！请检查 SDK_URL 是否正确。"
+          cat sdk.tar.xz | head -n 10
+          exit 1
+        fi
+        
+        mkdir -p /workdir/openwrt
+        tar -xJf sdk.tar.xz -C /workdir/openwrt --strip-components 1
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
     - name: Update & Install feeds
