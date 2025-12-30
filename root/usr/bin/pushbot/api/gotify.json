@@ -10,6 +10,12 @@
     "str_linefeed": "%0D%0A%0D%0A",
     "str_splitline": "%0D%0A%0D%0A----%0D%0A%0D%0A",
     "str_space": " ",
+    "boldstar": "",
+    "font_green2": "",
+    "font_blue": " ",
+    "font_green": " ",
+    "font_end": " ",
+    "font_end2": "",
     "str_tab": "    ",
     "type":
       {
