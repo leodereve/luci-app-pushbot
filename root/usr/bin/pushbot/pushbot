@@ -393,7 +393,7 @@ function cut_str {
 		temp_length=`expr $temp_length + 1`
 	done
 	temp_length=`expr $temp_length - 1`
-	echo $(echo "$1"|cut -c -$temp_length)"..."
+	echo $(echo "$1"|cut -c -$temp_length)"*"
 }
 
 # 随机数
@@ -508,9 +508,18 @@ function blackwhitelist(){
 
 function get_client(){
 	if [ -f "${dir}ipAddress" ]; then
+#leo修改
+        # 使用临时文件存储排序结果
+        local sorted_file="${dir}sorted_ipAddress"
+        
+        # 对ipAddress文件进行排序并输出到临时文件
+        sort -V "${dir}ipAddress" > "$sorted_file"
+        
+        # 读取排序后的文件进行处理
 	while read line; do
 		local js_str="${js_str}<div class='tr placeholder'>"
-		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $3}'`%></div>"
+#leo修改 就是因为^m的原因，造成没法显示：because of the ^m charater,the htm can not be handled properly.
+		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $3}'|sed 's/\r//g'|head -c 39`%></div>"
 		local tmp_mac=`echo "$line"|awk '{print $2}'`
 		local js_str="${js_str}<div class='th'><%:${tmp_mac}%></div>"
 		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $1}'`%></div>"
@@ -520,7 +529,10 @@ function get_client(){
 		local tmp_timenow=`date +%s`
 		local tmp_uptime=$(time_for_humans `expr ${tmp_timenow} - ${tmp_uptime}`)
 		local js_str="${js_str}<div class='th'><%:${tmp_uptime}%></div></div>"
-	done < ${dir}ipAddress
+	#done < ${dir}ipAddress
+#leo
+	done < $sorted_file
+	rm -f "$sorted_file"
 	fi
 cat>/usr/lib/lua/luci/view/pushbot/pushbot_client.htm<<EOF
 <h2><%:在线设备列表%></h2><div class="table" id="traffic"><div class="tr table-titles"><div class="th" id="thClient" style="width:17%"><%:客户端名%></div><div class="th" id="thMAC" style="width:10%"><%:MAC%></div><div class="th" id="thIP" style="width:17%"><%:IP%></div><div class="th" id="thTotal" style="width:9%"><%:总计流量%></div><div class="th" id="thFirstSeen" style="width:15%"><%:在线时间%></div></div>
@@ -612,7 +624,9 @@ function rand_geturl(){
 		local urllist="https://www.163.com https://www.qq.com https://www.baidu.com https://www.qidian.com https://www.douban.com"
 		local url_number=`expr $(echo "$urllist"|grep -o ' '|wc -l) + 1`
 		local url_str=`echo "$urllist"|awk -v i=$(rand 1 $url_number) '{print $i}'`
-		echo `curl -k -s -w "%{http_code}" -m 5 ${url_str} -A "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36" -o /dev/null`
+		#leo modified -m 15可以减少日志报错，但是可能延长响应时间会占用资源
+		#echo `curl -k -s -w "%{http_code}" -m 5 ${url_str} -A "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36" -o /dev/null`
+		echo `curl -k -s -w "%{http_code}" -m 15 ${url_str} -A "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36" -o /dev/null`
 	}
 	local check=`getcheck`
 	while [ -z "$check" ] || [ "$check" -ne "200" ]; do
@@ -870,14 +884,16 @@ function current_device(){
 	[ -f ${dir}ipAddress ] && local logrow=$(grep -c "" ${dir}ipAddress) || local logrow="0";[ $logrow -eq "0" ] && return
 	[ -f ${dir}usage.db ] && local ip_total_db="总计流量${str_space}${str_space}${str_space}${str_space}"
 	content="${content}${str_splitline}${str_title_start}${font_blue} 现有在线设备 ${logrow} 台，具体如下${font_end}${str_title_end}${str_linefeed}${str_tab}IP 地址${str_space}${str_space}${str_space}${str_space}${str_space}${str_space}${str_space}${str_space}${str_space}${ip_total_db}${boldstar}客户端名${boldstar}"
-	local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'`
+        local IPLIST=`cat ${dir}ipAddress|awk '{print $1}' | sort -V`
+#	local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'`
+
 	for ip in $IPLIST; do
 		local ip_mac=`getmac ${ip}`
 		local ip_total=`usage get ${ip_mac}`
 		local ip_name=`getname ${ip} ${ip_mac}`
-		local ip_name=`cut_str $ip_name 15`
-		if [ "${#ip}" -lt "15" ]; then
-			local n=`expr 15 - ${#ip}`
+		local ip_name=`cut_str $ip_name 39`
+		if [ "${#ip}" -lt "39" ]; then
+			local n=`expr 39 - ${#ip}`
 			for i in `seq 1 $n`; do
 				local ip="${ip}${str_space}"
 			done
