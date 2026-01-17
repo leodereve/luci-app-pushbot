@@ -578,4 +578,11 @@ nt.mac_hints(function(mac, name) a:value(mac, "%s (%s)" %{ mac, name }) end)
 a.rmempty = true
 a:depends({macmechanism2="MAC_offline"})
 
+-- [修正版] 解决 Bad Gateway 超时问题
+local apply = luci.http.formvalue("cbi.apply")
+if apply then
+    -- 使用 fork 模式或将输出完全重定向到 /dev/null，确保不阻塞 Web 进程
+    -- 2026 版推荐使用 luci.sys.exec 配合后台运行符
+    luci.sys.exec("/etc/init.d/pushbot restart >/dev/null 2>&1 &")
+end
 return m
