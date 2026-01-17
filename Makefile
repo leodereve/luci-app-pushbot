@@ -9,8 +9,8 @@ PKG_MAINTAINER:=tty228 <tty228@yeah.net>  zzsj0928 MasterOfStar
 LUCI_TITLE:=LuCI support for Pushbot
 LUCI_PKGARCH:=all
 #2025年12月29日报错jq，immortalwrt bug
-#LUCI_DEPENDS:=+iputils-arping +curl +jq
-LUCI_DEPENDS:=+iputils-arping +curl
+LUCI_DEPENDS:=+iputils-arping +curl +jq
+#LUCI_DEPENDS:=+iputils-arping +curl
 
 define Package/$(PKG_NAME)/conffiles
 /etc/config/pushbot
