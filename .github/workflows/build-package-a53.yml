@@ -5,7 +5,7 @@ on:
 
 env:
   # [修正] 雅典娜专用 IPQ60xx SDK 真实地址 (ImmortalWrt 24.10 支持 APK)
-  SDK_URL: https://downloads.openwrt.org/releases/24.10.5/targets/ipq806x/generic/openwrt-sdk-24.10.5-ipq806x-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+  SDK_URL: https://downloads.openwrt.org/releases/25.12.0-rc2/targets/qualcommax/ipq60xx/openwrt-sdk-25.12.0-rc2-qualcommax-ipq60xx_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   PackageName: luci-app-pushbot
   PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
   UPLOAD_RELEASE: true
