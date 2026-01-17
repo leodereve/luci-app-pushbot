@@ -413,27 +413,87 @@ function rand(){
 }
 
 # 在线设备列表
+#function pushbot_first(){
+#	[ -f "${dir}ipAddress" ] && local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'|grep -v "^$"|sort -u`
+#	for ip in $IPLIST; do
+#		read -u 5
+#		{
+#			down $ip
+#			echo "" >&5
+#		}&
+#	done
+#	wait
+#	unset ip IPLIST
+#	local IPLIST=`cat /proc/net/arp|grep "0x2\|0x6"|awk '{print $1}'|grep -v "^169.254."|grep -v "^$"|sort -u|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'`
+#	for ip in $IPLIST; do
+#		read -u 5
+#		{
+#			up $ip
+#			echo "" >&5
+#		}&
+#	done
+#	wait
+#}
+
+# 2026 适配版在线设备扫描函数
+# 2026 增强版：解决静态IP/休眠设备不显示问题
 function pushbot_first(){
-	[ -f "${dir}ipAddress" ] && local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'|grep -v "^$"|sort -u`
-	for ip in $IPLIST; do
-		read -u 5
-		{
-			down $ip
-			echo "" >&5
-		}&
-	done
-	wait
-	unset ip IPLIST
-	local IPLIST=`cat /proc/net/arp|grep "0x2\|0x6"|awk '{print $1}'|grep -v "^169.254."|grep -v "^$"|sort -u|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'`
-	for ip in $IPLIST; do
-		read -u 5
-		{
-			up $ip
-			echo "" >&5
-		}&
-	done
-	wait
+    # 1. 自动获取所有 LAN 侧桥接接口 (通常是 br-lan, 包含访客网络)
+    local interfaces=$(ip addr | grep "br-" | awk -F': ' '{print $2}' | cut -d'@' -f1)
+    
+    # 2. 强制唤醒：对所有 LAN 接口网段进行快速 Ping
+    for iface in $interfaces; do
+        local network=$(ip -4 addr show "$iface" | grep "inet" | awk '{print $2}')
+        [ -z "$network" ] && continue
+        # 针对 254 个 IP 发起异步探测
+        local prefix=${network%.*}
+        for i in $(seq 1 254); do ping -c 1 -W 1 "${prefix}.$i" >/dev/null 2>&1 & done
+    done
+    
+    # [核心修改] 等待 1.5 秒，确保邻居表（ARP）完成刷新
+    sleep 1.5
+
+    # 3. 清空临时文件
+    > "${dir}ipAddress"
+
+    # 4. 终极采集逻辑
+    { 
+        # A. 遍历所有邻居表记录 (不限接口，只要有 MAC 就要)
+        ip neigh show | grep -E "REACHABLE|STALE|DELAY|PROBE" | awk '{print $1, $5, "Unknown", "0"}';
+        # B. 强制加入 DHCP 租约 (即便邻居表没刷出来，这里也一定有)
+        awk '{print $3, $2, $4, $1}' /tmp/dhcp.leases 2>/dev/null;
+        # C. 强制加入 UCI 静态列表 (解决断网后依然想在列表里看到名字的问题)
+        uci show dhcp | grep "=host" | cut -d. -f2 | while read s; do
+            echo "$(uci -q get dhcp.$s.ip) $(uci -q get dhcp.$s.mac) $(uci -q get dhcp.$s.name) 0"
+        done;
+    } | awk '$1!="" && $2!="" && !seen[$2]++' | while read -r ip mac name uptime; do
+        
+        # 5. 修正名字
+        if [ "$name" = "Unknown" ] || [ "$name" = "*" ] || [ "$name" = "0" ]; then
+            name=$(uci show dhcp | grep -i "$mac" | cut -d"." -f2 | xargs -I {} uci -q get dhcp.{}.name)
+            [ -z "$name" ] && name=$(grep -w "$ip" /etc/hosts | awk '{print $2}')
+        fi
+        
+        name="${name:-未知设备}"
+        name=$(echo "$name" | tr ' ' '-' | sed 's/\*/未知设备/g')
+        
+        # 6. 写入文件
+        echo "$ip $mac $name ${uptime:-0}" >> "${dir}ipAddress"
+    done
+
+    # 7. 触发原有的在线状态逻辑
+    [ -f "${dir}ipAddress" ] && local IPLIST=$(cat "${dir}ipAddress" | awk '{print $1}')
+    for ip in $IPLIST; do
+        read -u 5
+        { up "$ip"; echo "" >&5; }&
+    done
+    wait
 }
+
+
+
+
+
 # 创建计划任务
 function pushbot_cron(){
 	function del_cron(){
