@@ -1,4 +1,4 @@
-name: Build luci-app-pushbot-Athena-APK
+name: Build luci-app-pushbot-filogic-APK
 
 on:
   workflow_dispatch:
