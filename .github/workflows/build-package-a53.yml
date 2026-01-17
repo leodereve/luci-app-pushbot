@@ -13,7 +13,7 @@ env:
   # 注意：必须使用包含 APK 支持的高版本 SDK
   SDK_URL: downloads.immortalwrt.org
   PackageName: luci-app-pushbot
-  PackageSource_URL: https://github.com/MasterOfStar/luci-app-pushbot
+  PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
   UPLOAD_Package: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
