@@ -3,12 +3,14 @@ name: Build luci-app-pushbot-Athena-APK
 on:
   workflow_dispatch:
 
+# [关键修复] 显式开启 Release 写入权限
+permissions:
+  contents: write
+
 env:
-  # 雅典娜专用 IPQ60xx SDK (2026年最新版，支持 APK 格式)
   SDK_URL: https://downloads.openwrt.org/releases/25.12.0-rc2/targets/qualcommax/ipq60xx/openwrt-sdk-25.12.0-rc2-qualcommax-ipq60xx_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   PackageName: luci-app-pushbot
   PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
-  UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
 
 jobs:
@@ -22,7 +24,6 @@ jobs:
     - name: Initialization environment
       run: |
         sudo -E apt-get -qq update
-        # 必须安装 zstd 以支持 2026 年新版 SDK 解压
         sudo -E apt-get -qq install build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev swig dos2unix zstd file
         sudo timedatectl set-timezone "$TZ"
 
@@ -30,15 +31,10 @@ jobs:
       run: |
         mkdir -p $GITHUB_WORKSPACE/openwrt
         curl -SLf "$SDK_URL" -o sdk_file
-        
-        # 自动识别 XZ 或 Zstd 压缩格式并解压
-        if file sdk_file | grep -q "XZ compressed data"; then
-            tar -xJf sdk_file -C $GITHUB_WORKSPACE/openwrt --strip-components 1
-        elif file sdk_file | grep -q "Zstandard compressed data"; then
+        if file sdk_file | grep -q "Zstandard"; then
             tar -I zstd -xf sdk_file -C $GITHUB_WORKSPACE/openwrt --strip-components 1
         else
-            echo "错误：SDK 下载文件格式不正确！"
-            exit 1
+            tar -xJf sdk_file -C $GITHUB_WORKSPACE/openwrt --strip-components 1
         fi
 
     - name: Update & Install feeds
@@ -51,23 +47,16 @@ jobs:
       run: |
         cd openwrt
         git clone $PackageSource_URL package/$PackageName
-        
-        # 关键修正：移除 Makefile 中的 +jq 依赖。
-        # 这样可以防止 SDK 试图去重新编译 jq 及其庞大的依赖树，极大缩短时间。
+        # 移除依赖以跳过全量内核编译
         find package/$PackageName -name "Makefile" -exec sed -i 's/+jq//g' {} +
-        
-        # 仅启用 APK 格式和目标插件
         echo "CONFIG_PACKAGE_FORMAT_APK=y" >> .config
         echo "CONFIG_PACKAGE_$PackageName=y" >> .config
-        
-        # 快速生成配置，不检查可选的内核包
         make defconfig
 
     - name: Compile the package
       id: compile
       run: |
         cd openwrt
-        # 仅针对 pushbot 进行快速编译，不编译全局
         make package/$PackageName/compile V=s -j$(nproc)
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -76,17 +65,21 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         mkdir -p $GITHUB_WORKSPACE/outputs
-        # 精确拷贝：只取 pushbot 的 APK，不取成百上千个 kmod 驱动包
+        # 精确匹配，只取你需要的 pushbot
         find openwrt/bin/ -type f -name "luci-app-pushbot*.apk" -exec cp -f {} $GITHUB_WORKSPACE/outputs/ \;
         echo "PackagePath=$GITHUB_WORKSPACE/outputs" >> $GITHUB_ENV
+        # 修复变量：在 Shell 中提前计算好 Tag，不要在 Release 步骤里写脚本
+        echo "REL_TAG=pushbot-athena-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload package to release
       uses: softprops/action-gh-release@v2
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      if: steps.organize.outputs.status == 'success'
       with:
-        tag_name: pushbot-athena-$(date +"%Y%m%d-%H%M")
+        tag_name: ${{ steps.organize.outputs.REL_TAG }}
         files: ${{ env.PackagePath }}/*.apk
+        # 使用自动生成的 Token
+        token: ${{ secrets.GITHUB_TOKEN }}
         body: |
           ### 编译完成
           - **设备**: 京东云雅典娜 (Qualcomm IPQ60xx)
@@ -97,4 +90,3 @@ jobs:
             apk add jq
             apk add --allow-untrusted luci-app-pushbot_*.apk
             ```
-
