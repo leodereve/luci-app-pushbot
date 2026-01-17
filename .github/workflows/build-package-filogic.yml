@@ -3,11 +3,11 @@ name: Build luci-app-pushbot-filogic-APK
 on:
   workflow_dispatch:
 
-# [关键修复] 显式开启 Release 写入权限
 permissions:
   contents: write
 
 env:
+  # Filogic 专用 SDK 链接 (2026年 25.12-rc2 最新版)
   SDK_URL: https://downloads.openwrt.org/releases/25.12.0-rc2/targets/mediatek/filogic/openwrt-sdk-25.12.0-rc2-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   PackageName: luci-app-pushbot
   PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
@@ -47,7 +47,7 @@ jobs:
       run: |
         cd openwrt
         git clone $PackageSource_URL package/$PackageName
-        # 移除依赖以跳过全量内核编译
+        # 移除依赖以跳过全量编译，提高 2026 年环境下的构建速度
         find package/$PackageName -name "Makefile" -exec sed -i 's/+jq//g' {} +
         echo "CONFIG_PACKAGE_FORMAT_APK=y" >> .config
         echo "CONFIG_PACKAGE_$PackageName=y" >> .config
@@ -65,27 +65,26 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         mkdir -p $GITHUB_WORKSPACE/outputs
-        # 精确匹配，只取你需要的 pushbot
+        # 精确拷贝 Filogic 架构的 APK
         find openwrt/bin/ -type f -name "luci-app-pushbot*.apk" -exec cp -f {} $GITHUB_WORKSPACE/outputs/ \;
+        # [关键修复]：在 GitHub Actions 中设置 Step 输出的正确语法
+        echo "REL_TAG=pushbot-filogic-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
         echo "PackagePath=$GITHUB_WORKSPACE/outputs" >> $GITHUB_ENV
-        # 修复变量：在 Shell 中提前计算好 Tag，不要在 Release 步骤里写脚本
-        echo "REL_TAG=pushbot-athena-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
-        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload package to release
       uses: softprops/action-gh-release@v2
-      if: steps.organize.outputs.status == 'success'
+      if: steps.organize.outputs.REL_TAG != ''
       with:
+        # [关键修复]：引用上面生成的 REL_TAG
         tag_name: ${{ steps.organize.outputs.REL_TAG }}
         files: ${{ env.PackagePath }}/*.apk
-        # 使用自动生成的 Token
         token: ${{ secrets.GITHUB_TOKEN }}
         body: |
-          ### 编译完成
-          - **设备**: 京东云雅典娜 (Qualcomm IPQ60xx)
-          - **系统版本**: OpenWrt 25.12+ (APK 格式)
+          ### 编译完成 (2026-01-17)
+          - **设备平台**: MediaTek Filogic (MT7981/MT7986/MT7988)
+          - **架构**: aarch64_cortex-a53 / a72
+          - **文件格式**: APK
           - **安装说明**:
-            由于编译时移除了 jq 强制依赖以加速构建，请确保路由器已联网并先执行：
             ```bash
             apk add jq
             apk add --allow-untrusted luci-app-pushbot_*.apk
