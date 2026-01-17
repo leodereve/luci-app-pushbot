@@ -11,7 +11,7 @@ on:
 env:
   # 修改为 A53 架构 SDK 地址 (以 ImmortalWrt Amlogic/Aarch64 24.10 为例)
   # 注意：必须使用包含 APK 支持的高版本 SDK
-  SDK_URL: downloads.immortalwrt.org
+  SDK_URL:  https://downloads.openwrt.org/releases/24.10.5/targets/ipq806x/generic/openwrt-sdk-24.10.5-ipq806x-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
   PackageName: luci-app-pushbot
   PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
   UPLOAD_Package: true
