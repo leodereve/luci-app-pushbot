@@ -1,26 +1,61 @@
 #!/bin/sh /etc/rc.common
 
+# 优先级 99 确保在网络就绪后启动
 START=99
 STOP=10
+EXTRA_COMMANDS="status"
+
+PROG=/usr/bin/pushbot/pushbot
+CONF=/etc/config/pushbot
 
 start() {
-	state=`pgrep -f "/usr/bin/pushbot/pushbot"`
-	if [ ! -z "$state" ]; then
-		restart
-	else
-		/usr/bin/pushbot/pushbot &
-	fi
-	echo "pushbot is starting now ..."
+    # 1. 依然先读取配置
+    local enabled=$(uci -q get pushbot.@pushbot[0].pushbot_enable)
+    if [ "$enabled" != "1" ]; then
+        echo "Pushbot is disabled."
+        return 1
+    fi
+
+    # 2. 检查进程（使用 pgrep 更精准，防止 grep 自身干扰）
+    local pid=$(pgrep -f "$PROG" | grep -v "$$")
+
+    if [ -z "$pid" ]; then
+        chmod +x "$PROG"
+
+        # [核心修改]：使用括号异步启动，并强制在后台运行
+        # 这样主程序会立刻获得 PID，而耗时的初始化逻辑会在后台慢慢跑
+        ($PROG >/dev/null 2>&1 &)
+
+        # [关键添加]：稍微停顿 0.5 秒，确保 ps 能够抓到进程，解决“点两次”问题
+        # 注意：BusyBox 1.37 不支持 sleep 0.5，所以改用以下技巧
+        usleep 500000 2>/dev/null || sleep 1
+
+        echo "pushbot is starting now ..."
+    else
+        echo "pushbot is already running (PID: $pid)."
+    fi
 }
 
+
 stop() {
-	kill -9 `pgrep -f "/usr/bin/pushbot/pushbot"` 2>/dev/null
-	echo "pushbot exit ..."
+    # 查找所有相关进程并杀掉
+    local pid=$(ps | grep "$PROG" | grep -v "grep" | grep -v "$$" | awk '{print $1}')
+    [ -n "$pid" ] && kill -9 $pid 2>/dev/null
+    echo "pushbot exit ..."
+}
+
+status() {
+    # 供 Web 界面查询状态使用
+    local pid=$(ps | grep "$PROG" | grep -v "grep" | grep -v "$$" | awk '{print $1}')
+    if [ -n "$pid" ]; then
+        echo "running"
+    else
+        echo "not running"
+    fi
 }
 
 restart(){
-	stop
-	sleep 1
-	start
-	echo "restarted."
+    stop
+    sleep 1
+    start
 }
