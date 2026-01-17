@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  # [修正] 雅典娜专用 IPQ60xx SDK 真实地址 (ImmortalWrt 24.10 支持 APK)
+  # 雅典娜专用 IPQ60xx SDK (2026年最新版，支持 APK 格式)
   SDK_URL: https://downloads.openwrt.org/releases/25.12.0-rc2/targets/qualcommax/ipq60xx/openwrt-sdk-25.12.0-rc2-qualcommax-ipq60xx_gcc-14.3.0_musl.Linux-x86_64.tar.zst
   PackageName: luci-app-pushbot
   PackageSource_URL: https://github.com/leodereve/luci-app-pushbot
@@ -22,23 +22,22 @@ jobs:
     - name: Initialization environment
       run: |
         sudo -E apt-get -qq update
-        # [修正] 增加 zstd 支持
+        # 必须安装 zstd 以支持 2026 年新版 SDK 解压
         sudo -E apt-get -qq install build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev swig dos2unix zstd file
         sudo timedatectl set-timezone "$TZ"
 
     - name: Clone SDK
       run: |
         mkdir -p $GITHUB_WORKSPACE/openwrt
-        # [修正] 自动判断后缀并下载，增加错误检测
         curl -SLf "$SDK_URL" -o sdk_file
         
+        # 自动识别 XZ 或 Zstd 压缩格式并解压
         if file sdk_file | grep -q "XZ compressed data"; then
             tar -xJf sdk_file -C $GITHUB_WORKSPACE/openwrt --strip-components 1
         elif file sdk_file | grep -q "Zstandard compressed data"; then
             tar -I zstd -xf sdk_file -C $GITHUB_WORKSPACE/openwrt --strip-components 1
         else
-            echo "错误：下载的文件格式不支持，请检查 SDK_URL。"
-            cat sdk_file | head -n 10
+            echo "错误：SDK 下载文件格式不正确！"
             exit 1
         fi
 
@@ -47,30 +46,28 @@ jobs:
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        # [关键] 必须显式安装 jq 的 feed，否则后面写入 .config 无效
-        ./scripts/feeds install jq
 
     - name: Load custom configuration
       run: |
         cd openwrt
         git clone $PackageSource_URL package/$PackageName
         
-        # 移除 Makefile 中的 jq 依赖
+        # 关键修正：移除 Makefile 中的 +jq 依赖。
+        # 这样可以防止 SDK 试图去重新编译 jq 及其庞大的依赖树，极大缩短时间。
         find package/$PackageName -name "Makefile" -exec sed -i 's/+jq//g' {} +
         
-        # [修正] 注入顺序：必须在 defconfig 之前或之后确保生效
+        # 仅启用 APK 格式和目标插件
         echo "CONFIG_PACKAGE_FORMAT_APK=y" >> .config
         echo "CONFIG_PACKAGE_$PackageName=y" >> .config
-        echo "CONFIG_PACKAGE_jq=y" >> .config
-        echo "CONFIG_PACKAGE_libjq=y" >> .config
+        
+        # 快速生成配置，不检查可选的内核包
         make defconfig
 
     - name: Compile the package
       id: compile
       run: |
         cd openwrt
-        # 针对 2026 新环境，先尝试单独编译 jq 确保依赖链
-        make package/utils/jq/compile V=s -j$(nproc) || true
+        # 仅针对 pushbot 进行快速编译，不编译全局
         make package/$PackageName/compile V=s -j$(nproc)
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -79,8 +76,8 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         mkdir -p $GITHUB_WORKSPACE/outputs
-        # [修正] 路径适配
-        find openwrt/bin/ -type f -name "*.apk" -exec cp -f {} $GITHUB_WORKSPACE/outputs/ \;
+        # 精确拷贝：只取 pushbot 的 APK，不取成百上千个 kmod 驱动包
+        find openwrt/bin/ -type f -name "luci-app-pushbot*.apk" -exec cp -f {} $GITHUB_WORKSPACE/outputs/ \;
         echo "PackagePath=$GITHUB_WORKSPACE/outputs" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -88,10 +85,16 @@ jobs:
       uses: softprops/action-gh-release@v2
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
       with:
-        tag_name: pushbot-athena-$(date +"%Y%m%d")
+        tag_name: pushbot-athena-$(date +"%Y%m%d-%H%M")
         files: ${{ env.PackagePath }}/*.apk
         body: |
-          设备: 京东云雅典娜 (Qualcomm IPQ60xx)
-          格式: APK
-          安装说明:
-          apk add --allow-untrusted *.apk
+          ### 编译完成
+          - **设备**: 京东云雅典娜 (Qualcomm IPQ60xx)
+          - **系统版本**: OpenWrt 25.12+ (APK 格式)
+          - **安装说明**:
+            由于编译时移除了 jq 强制依赖以加速构建，请确保路由器已联网并先执行：
+            ```bash
+            apk add jq
+            apk add --allow-untrusted luci-app-pushbot_*.apk
+            ```
+
