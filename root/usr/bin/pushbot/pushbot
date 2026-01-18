@@ -413,79 +413,43 @@ function rand(){
 }
 
 # 在线设备列表
-#function pushbot_first(){
-#	[ -f "${dir}ipAddress" ] && local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'|grep -v "^$"|sort -u`
-#	for ip in $IPLIST; do
-#		read -u 5
-#		{
-#			down $ip
-#			echo "" >&5
-#		}&
-#	done
-#	wait
-#	unset ip IPLIST
-#	local IPLIST=`cat /proc/net/arp|grep "0x2\|0x6"|awk '{print $1}'|grep -v "^169.254."|grep -v "^$"|sort -u|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'`
-#	for ip in $IPLIST; do
-#		read -u 5
-#		{
-#			up $ip
-#			echo "" >&5
-#		}&
-#	done
-#	wait
-#}
-
 # 2026 适配版在线设备扫描函数
 # 2026 增强版：解决静态IP/休眠设备不显示问题
 function pushbot_first(){
-    # 1. 自动获取所有 LAN 侧桥接接口 (通常是 br-lan, 包含访客网络)
-    local interfaces=$(ip addr | grep "br-" | awk -F': ' '{print $2}' | cut -d'@' -f1)
-    
-    # 2. 强制唤醒：对所有 LAN 接口网段进行快速 Ping
-    for iface in $interfaces; do
-        local network=$(ip -4 addr show "$iface" | grep "inet" | awk '{print $2}')
-        [ -z "$network" ] && continue
-        # 针对 254 个 IP 发起异步探测
-        local prefix=${network%.*}
-        for i in $(seq 1 254); do ping -c 1 -W 1 "${prefix}.$i" >/dev/null 2>&1 & done
-    done
-    
-    # [核心修改] 等待 1.5 秒，确保邻居表（ARP）完成刷新
-    sleep 1.5
+    # 1. 自动获取局域网网段前缀 (例如 192.168.0)
+    local lan_prefix=$(uci -q get network.lan.ipaddr | cut -d. -f1-3)
 
-    # 3. 清空临时文件
-    > "${dir}ipAddress"
-
-    # 4. 终极采集逻辑
-    { 
-        # A. 遍历所有邻居表记录 (不限接口，只要有 MAC 就要)
-        ip neigh show | grep -E "REACHABLE|STALE|DELAY|PROBE" | awk '{print $1, $5, "Unknown", "0"}';
-        # B. 强制加入 DHCP 租约 (即便邻居表没刷出来，这里也一定有)
-        awk '{print $3, $2, $4, $1}' /tmp/dhcp.leases 2>/dev/null;
-        # C. 强制加入 UCI 静态列表 (解决断网后依然想在列表里看到名字的问题)
-        uci show dhcp | grep "=host" | cut -d. -f2 | while read s; do
-            echo "$(uci -q get dhcp.$s.ip) $(uci -q get dhcp.$s.mac) $(uci -q get dhcp.$s.name) 0"
-        done;
-    } | awk '$1!="" && $2!="" && !seen[$2]++' | while read -r ip mac name uptime; do
-        
-        # 5. 修正名字
-        if [ "$name" = "Unknown" ] || [ "$name" = "*" ] || [ "$name" = "0" ]; then
-            name=$(uci show dhcp | grep -i "$mac" | cut -d"." -f2 | xargs -I {} uci -q get dhcp.{}.name)
-            [ -z "$name" ] && name=$(grep -w "$ip" /etc/hosts | awk '{print $2}')
-        fi
-        
-        name="${name:-未知设备}"
-        name=$(echo "$name" | tr ' ' '-' | sed 's/\*/未知设备/g')
-        
-        # 6. 写入文件
-        echo "$ip $mac $name ${uptime:-0}" >> "${dir}ipAddress"
-    done
-
-    # 7. 触发原有的在线状态逻辑
-    [ -f "${dir}ipAddress" ] && local IPLIST=$(cat "${dir}ipAddress" | awk '{print $1}')
+    # --- 第一段：检测离线 (完全保留原样，处理已在 ipAddress 里的设备) ---
+    [ -f "${dir}ipAddress" ] && local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'|grep -v "^$"|sort -u`
     for ip in $IPLIST; do
         read -u 5
-        { up "$ip"; echo "" >&5; }&
+        {
+            down $ip
+            echo "" >&5
+        }&
+    done
+    wait
+    unset ip IPLIST
+
+    # --- 第二段：实时探测上线 (解决漏检 + 排除容器IP) ---
+    # 核心逻辑：先用并行的 ping 扫射整个局域网段，强制刷新 ARP 表
+    for i in $(seq 1 254); do
+        ping -c 1 -W 1 "${lan_prefix}.$i" >/dev/null 2>&1 &
+    done
+    # 给 ping 留一点点响应时间
+    sleep 2
+
+    # 此时 ARP 表已被 ping 唤醒，包含了所有“当下能 ping 通”的设备
+    # 过滤条件：1. 必须是局域网段 2. 状态为 0x2 (可用) 3. 排除 169.254 (无效地址)
+    local IPLIST=$(cat /proc/net/arp | grep "0x2\|0x6" | grep "^${lan_prefix}\." | awk '{print $1}' | grep -v "^169.254." | sort -u | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+
+    for ip in $IPLIST; do
+        read -u 5
+        {
+            # 调用 up 函数。up 内部通常还会再 ping 一次做二次确认
+            up $ip
+            echo "" >&5
+        }&
     done
     wait
 }
@@ -574,40 +538,61 @@ function blackwhitelist(){
 	return 0
 }
 
+
 function get_client(){
-	if [ -f "${dir}ipAddress" ]; then
-#leo修改
-        # 使用临时文件存储排序结果
-        local sorted_file="${dir}sorted_ipAddress"
+    if [ -f "${dir}ipAddress" ]; then
+        # 统计在线设备总数
+        local device_count=$(wc -l < "${dir}ipAddress")
         
-        # 对ipAddress文件进行排序并输出到临时文件
+        # 使用临时文件进行 IP 排序
+        local sorted_file="${dir}sorted_ipAddress"
         sort -V "${dir}ipAddress" > "$sorted_file"
         
-        # 读取排序后的文件进行处理
-	while read line; do
-		local js_str="${js_str}<div class='tr placeholder'>"
-#leo修改 就是因为^m的原因，造成没法显示：because of the ^m charater,the htm can not be handled properly.
-		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $3}'|sed 's/\r//g'|head -c 39`%></div>"
-		local tmp_mac=`echo "$line"|awk '{print $2}'`
-		local js_str="${js_str}<div class='th'><%:${tmp_mac}%></div>"
-		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $1}'`%></div>"
-		local tmp_usage=`usage get ${tmp_mac}`
-		local js_str="${js_str}<div class='th'><%:${tmp_usage}%></div>"
-		local tmp_uptime=`echo "$line"|awk '{print $4}'`
-		local tmp_timenow=`date +%s`
-		local tmp_uptime=$(time_for_humans `expr ${tmp_timenow} - ${tmp_uptime}`)
-		local js_str="${js_str}<div class='th'><%:${tmp_uptime}%></div></div>"
-	#done < ${dir}ipAddress
-#leo
-	done < $sorted_file
-	rm -f "$sorted_file"
-	fi
-cat>/usr/lib/lua/luci/view/pushbot/pushbot_client.htm<<EOF
-<h2><%:在线设备列表%></h2><div class="table" id="traffic"><div class="tr table-titles"><div class="th" id="thClient" style="width:17%"><%:客户端名%></div><div class="th" id="thMAC" style="width:10%"><%:MAC%></div><div class="th" id="thIP" style="width:17%"><%:IP%></div><div class="th" id="thTotal" style="width:9%"><%:总计流量%></div><div class="th" id="thFirstSeen" style="width:15%"><%:在线时间%></div></div>
+        local js_str=""
+        while read -r line; do
+            # 严格解析 4 个字段
+            local tmp_ip=$(echo "$line" | awk '{print $1}')
+            local tmp_mac=$(echo "$line" | awk '{print $2}')
+            local tmp_name=$(echo "$line" | awk '{print $3}' | tr '-' ' ') # 还原空格显示
+            local tmp_uptime_ts=$(echo "$line" | awk '{print $4}')
+            
+            # 计算在线时长
+            local tmp_timenow=$(date +%s)
+            local diff_time=$((tmp_timenow - tmp_uptime_ts))
+            [ $diff_time -lt 0 ] && diff_time=0
+            local uptime_human=$(time_for_humans $diff_time)
+            
+            # 获取流量使用情况
+            local tmp_usage=$(usage get "${tmp_mac}")
+
+            # 组装 HTML 行
+            js_str="${js_str}<div class='tr placeholder'>"
+            js_str="${js_str}<div class='th'><%:${tmp_name}%></div>"
+            js_str="${js_str}<div class='th'><%:${tmp_mac}%></div>"
+            js_str="${js_str}<div class='th'><%:${tmp_ip}%></div>"
+            js_str="${js_str}<div class='th'><%:${tmp_usage}%></div>"
+            js_str="${js_str}<div class='th'><%:${uptime_human}%></div></div>"
+        done < "$sorted_file"
+        rm -f "$sorted_file"
+    fi
+
+    # 输出到 Luci 模板文件
+    cat > /usr/lib/lua/luci/view/pushbot/pushbot_client.htm <<EOF
+<h2><%:在线设备列表%> (共有在线设备 ${device_count:-0} 台)</h2>
+<div class="table" id="traffic">
+    <div class="tr table-titles">
+        <div class="th" id="thClient" style="width:17%"><%:客户端名%></div>
+        <div class="th" id="thMAC" style="width:12%"><%:MAC地址%></div>
+        <div class="th" id="thIP" style="width:17%"><%:IP地址%></div>
+        <div class="th" id="thTotal" style="width:10%"><%:总计流量%></div>
+        <div class="th" id="thFirstSeen" style="width:15%"><%:持续在线时间%></div>
+    </div>
 $js_str
 </div>
 EOF
 }
+
+
 
 # 重启网络服务
 function network_restart(){
