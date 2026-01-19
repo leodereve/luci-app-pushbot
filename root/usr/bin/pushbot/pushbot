@@ -31,6 +31,15 @@ function read_config(){
         	eval "$(echo ${str_version:0:2}"_version")='$clean_version'"
    		 fi
 	done
+	# --- 新增：明确流量统计功能是否可用 ---
+    	# 逻辑：检查 wrtbwmon 版本是否存在，且配置文件中是否开启了相关功能
+    	if [ -n "$wr_version" ] && [ "$client_usage" = "1" ]; then
+       		 has_usage=true
+    	else
+       		 has_usage=false
+   	 fi
+    	# ------------------------------------
+
 	dir="/tmp/pushbot/" && mkdir -p ${dir}
 	tempjsonpath="/tmp/pushbot/temp.json"
 	ip_blacklist_path="/usr/bin/pushbot/api/ip_blacklist"
@@ -546,53 +555,114 @@ function blackwhitelist(){
 
 function get_client(){
     if [ -f "${dir}ipAddress" ]; then
-        # 统计在线设备总数
         local device_count=$(wc -l < "${dir}ipAddress")
-        
-        # 使用临时文件进行 IP 排序
         local sorted_file="${dir}sorted_ipAddress"
         sort -V "${dir}ipAddress" > "$sorted_file"
         
         local js_str=""
         while read -r line; do
-            # 严格解析 4 个字段
             local tmp_ip=$(echo "$line" | awk '{print $1}')
             local tmp_mac=$(echo "$line" | awk '{print $2}')
-            local tmp_name=$(echo "$line" | awk '{print $3}' | tr '-' ' ') # 还原空格显示
+            local tmp_name=$(echo "$line" | awk '{print $3}' | tr '-' ' ')
             local tmp_uptime_ts=$(echo "$line" | awk '{print $4}')
             
-            # 计算在线时长
             local tmp_timenow=$(date +%s)
             local diff_time=$((tmp_timenow - tmp_uptime_ts))
             [ $diff_time -lt 0 ] && diff_time=0
             local uptime_human=$(time_for_humans $diff_time)
             
-            # 获取流量使用情况
-            local tmp_usage=$(usage get "${tmp_mac}")
-
-            # 组装 HTML 行
-            js_str="${js_str}<div class='tr placeholder'>"
-            js_str="${js_str}<div class='th'><%:${tmp_name}%></div>"
-            js_str="${js_str}<div class='th'><%:${tmp_mac}%></div>"
-            js_str="${js_str}<div class='th'><%:${tmp_ip}%></div>"
-            js_str="${js_str}<div class='th'><%:${tmp_usage}%></div>"
-            js_str="${js_str}<div class='th'><%:${uptime_human}%></div></div>"
+            js_str="${js_str}<tr>"
+            js_str="${js_str}<td>${tmp_name}</td>"
+            js_str="${js_str}<td>${tmp_mac}</td>"
+            js_str="${js_str}<td>${tmp_ip}</td>"
+            
+            if [ "$has_usage" = "true" ]; then
+                local tmp_usage=$(usage get "${tmp_mac}")
+                js_str="${js_str}<td>${tmp_usage}</td>"
+            fi
+            
+            js_str="${js_str}<td>${uptime_human}</td></tr>"
         done < "$sorted_file"
         rm -f "$sorted_file"
     fi
 
-    # 输出到 Luci 模板文件
+    # 动态布局配置
+    if [ "$has_usage" = "true" ]; then
+        local min_w="800px"
+        local th_usage="<th style='width:15%'>流量统计</th>"
+        local w_name="20%" w_mac="25%" w_ip="20%" w_time="20%"
+    else
+        local min_w="600px"
+        local th_usage=""
+        local w_name="25%" w_mac="30%" w_ip="25%" w_time="20%"
+    fi
+
     cat > /usr/lib/lua/luci/view/pushbot/pushbot_client.htm <<EOF
-<h2><%:在线设备列表%> (共有在线设备 ${device_count:-0} 台)</h2>
-<div class="table" id="traffic">
-    <div class="tr table-titles">
-        <div class="th" id="thClient" style="width:17%"><%:客户端名%></div>
-        <div class="th" id="thMAC" style="width:12%"><%:MAC地址%></div>
-        <div class="th" id="thIP" style="width:17%"><%:IP地址%></div>
-        <div class="th" id="thTotal" style="width:10%"><%:总计流量%></div>
-        <div class="th" id="thFirstSeen" style="width:15%"><%:持续在线时间%></div>
-    </div>
-$js_str
+<style>
+    /* 容器：背景透明，自适应主题 */
+    .scroll-container {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        margin: 15px 0;
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        background: transparent !important; 
+    }
+
+    .client-table {
+        width: 100% !important;
+        min-width: ${min_w} !important;
+        border-collapse: collapse !important;
+        table-layout: fixed !important;
+        background: transparent !important;
+        color: inherit !important; /* 继承 Luci 主题文字颜色 */
+    }
+
+    /* 表头：使用半透明背景以适配深浅主题 */
+    .client-table thead {
+        display: table-header-group !important;
+        background-color: rgba(128, 128, 128, 0.1) !important;
+    }
+
+    .client-table th, .client-table td {
+        padding: 12px 8px !important;
+        text-align: center !important;
+        border: 1px solid rgba(128, 128, 128, 0.2) !important; /* 使用淡色边框 */
+        white-space: nowrap !important;
+        font-size: 13px !important;
+        color: inherit !important;
+    }
+
+    .client-table th {
+        font-weight: bold !important;
+    }
+
+    /* 隔行变色：使用非常淡的透明度，确保在深色背景下不刺眼 */
+    .client-table tbody tr:nth-child(even) {
+        background-color: rgba(128, 128, 128, 0.05) !important;
+    }
+</style>
+
+<h2 style="margin-top:20px;"><%:在线设备列表%> (${device_count:-0})</h2>
+
+<div class="scroll-container">
+    <table class="client-table">
+        <thead>
+            <tr>
+                <th style="width:${w_name}"><%:设备名称%></th>
+                <th style="width:${w_mac}"><%:MAC地址%></th>
+                <th style="width:${w_ip}"><%:IP地址%></th>
+                ${th_usage}
+                <th style="width:${w_time}"><%:在线时长%></th>
+            </tr>
+        </thead>
+        <tbody>
+            $js_str
+        </tbody>
+    </table>
+</div>
+<div style="font-size: 11px; opacity: 0.6; text-align: right; padding-right: 5px;">
+    <%:(左右滑动查看完整表格)%>
 </div>
 EOF
 }
