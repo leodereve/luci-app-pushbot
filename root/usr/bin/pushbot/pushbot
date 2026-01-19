@@ -554,6 +554,15 @@ function blackwhitelist(){
 
 
 function get_client(){
+    # 确保 has_usage 变量有效
+    if [ -z "$has_usage" ]; then
+        if command -v usage >/dev/null 2>&1 && [ "$client_usage" = "1" ]; then
+            has_usage="true"
+        else
+            has_usage="false"
+        fi
+    fi
+
     if [ -f "${dir}ipAddress" ]; then
         local device_count=$(wc -l < "${dir}ipAddress")
         local sorted_file="${dir}sorted_ipAddress"
@@ -565,16 +574,26 @@ function get_client(){
             local tmp_mac=$(echo "$line" | awk '{print $2}')
             local tmp_name=$(echo "$line" | awk '{print $3}' | tr '-' ' ')
             local tmp_uptime_ts=$(echo "$line" | awk '{print $4}')
+
+            # 智能名称补全
+            if [ "$tmp_name" = "unknown" ] || [ "$tmp_name" = "*" ] || [ -z "$tmp_name" ]; then
+                local v_name=$(getname "$tmp_ip" "$tmp_mac")
+                [ ! -z "$v_name" ] && [ "$v_name" != "unknown" ] && tmp_name="$v_name"
+            fi
+
+            # 【核心修复】清洗厂商名
+            # 1. 使用 tr -d '\r' 彻底删除回车符 (^M)
+            # 2. 使用 tr -d '\n' 确保没有意外换行
+            # 3. 使用 sed 过滤掉单双引号和反斜杠
+            tmp_name=$(echo "$tmp_name" | tr -d '\r' | tr -d '\n' | sed "s/['\"\\\]//g")
             
             local tmp_timenow=$(date +%s)
             local diff_time=$((tmp_timenow - tmp_uptime_ts))
             [ $diff_time -lt 0 ] && diff_time=0
             local uptime_human=$(time_for_humans $diff_time)
             
-            js_str="${js_str}<tr>"
-            js_str="${js_str}<td>${tmp_name}</td>"
-            js_str="${js_str}<td>${tmp_mac}</td>"
-            js_str="${js_str}<td>${tmp_ip}</td>"
+            # 组装 HTML 行
+            js_str="${js_str}<tr><td>${tmp_name}</td><td>${tmp_mac}</td><td>${tmp_ip}</td>"
             
             if [ "$has_usage" = "true" ]; then
                 local tmp_usage=$(usage get "${tmp_mac}")
@@ -587,86 +606,52 @@ function get_client(){
     fi
 
     # 动态布局配置
+    local min_w="600px"
+    local th_usage=""
+    local w_name="25%" w_mac="30%" w_ip="25%" w_time="20%"
+
     if [ "$has_usage" = "true" ]; then
-        local min_w="800px"
-        local th_usage="<th style='width:15%'>流量统计</th>"
-        local w_name="20%" w_mac="25%" w_ip="20%" w_time="20%"
-    else
-        local min_w="600px"
-        local th_usage=""
-        local w_name="25%" w_mac="30%" w_ip="25%" w_time="20%"
+        min_w="800px"
+        th_usage="<th style='width:15%'>流量统计</th>"
+        w_name="20%" w_mac="25%" w_ip="20%" w_time="20%"
     fi
 
+    # 再次清理标题和布局变量（防止意外干扰）
+    th_usage=$(echo "$th_usage" | tr -d '\r' | sed "s/['\"]//g")
+
+    # 生成 HTML 模板
     cat > /usr/lib/lua/luci/view/pushbot/pushbot_client.htm <<EOF
 <style>
-    /* 容器：背景透明，自适应主题 */
-    .scroll-container {
-        width: 100%;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        margin: 15px 0;
-        border: 1px solid rgba(128, 128, 128, 0.3);
-        background: transparent !important; 
-    }
-
-    .client-table {
-        width: 100% !important;
-        min-width: ${min_w} !important;
-        border-collapse: collapse !important;
-        table-layout: fixed !important;
-        background: transparent !important;
-        color: inherit !important; /* 继承 Luci 主题文字颜色 */
-    }
-
-    /* 表头：使用半透明背景以适配深浅主题 */
-    .client-table thead {
-        display: table-header-group !important;
-        background-color: rgba(128, 128, 128, 0.1) !important;
-    }
-
-    .client-table th, .client-table td {
-        padding: 12px 8px !important;
-        text-align: center !important;
-        border: 1px solid rgba(128, 128, 128, 0.2) !important; /* 使用淡色边框 */
-        white-space: nowrap !important;
-        font-size: 13px !important;
-        color: inherit !important;
-    }
-
-    .client-table th {
-        font-weight: bold !important;
-    }
-
-    /* 隔行变色：使用非常淡的透明度，确保在深色背景下不刺眼 */
-    .client-table tbody tr:nth-child(even) {
-        background-color: rgba(128, 128, 128, 0.05) !important;
-    }
+    .scroll-container { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 15px 0; border: 1px solid var(--border-color, #ccc); background: transparent; }
+    .client-table { width: 100% !important; min-width: ${min_w} !important; border-collapse: collapse !important; table-layout: fixed !important; background: transparent; color: var(--color-primary, inherit); }
+    .client-table thead { background-color: var(--table-header-bg, rgba(128, 128, 128, 0.1)) !important; }
+    .client-table th, .client-table td { padding: 10px 5px; text-align: center; border: 1px solid var(--border-color, rgba(128, 128, 128, 0.2)); white-space: nowrap; font-size: 12px; color: inherit; }
+    .client-table th { font-weight: bold; color: var(--title-color, inherit); }
+    .client-table tbody tr:nth-child(even) { background-color: var(--table-stripe-bg, rgba(128, 128, 128, 0.05)); }
 </style>
 
-<h2 style="margin-top:20px;"><%:在线设备列表%> (${device_count:-0})</h2>
-
+<h2 style="margin-top:20px; color: var(--title-color, inherit);">在线设备列表 (${device_count:-0})</h2>
 <div class="scroll-container">
     <table class="client-table">
         <thead>
             <tr>
-                <th style="width:${w_name}"><%:设备名称%></th>
-                <th style="width:${w_mac}"><%:MAC地址%></th>
-                <th style="width:${w_ip}"><%:IP地址%></th>
+                <th style="width:${w_name}">设备名称</th>
+                <th style="width:${w_mac}">MAC地址</th>
+                <th style="width:${w_ip}">IP地址</th>
                 ${th_usage}
-                <th style="width:${w_time}"><%:在线时长%></th>
+                <th style="width:${w_time}">在线时长</th>
             </tr>
         </thead>
         <tbody>
-            $js_str
+            ${js_str}
         </tbody>
     </table>
 </div>
-<div style="font-size: 11px; opacity: 0.6; text-align: right; padding-right: 5px;">
-    <%:(左右滑动查看完整表格)%>
+<div style="font-size: 11px; opacity: 0.6; text-align: right; padding-right: 5px; color: var(--color-primary, inherit);">
+    (左右滑动查看完整表格)
 </div>
 EOF
 }
-
 
 
 # 重启网络服务
@@ -748,102 +733,10 @@ function unattended(){
 
 # 检测网络状态
 function rand_geturl(){
-	function getcheck(){
-		local urllist="https://www.163.com https://www.qq.com https://www.baidu.com https://www.qidian.com https://www.douban.com"
-		local url_number=`expr $(echo "$urllist"|grep -o ' '|wc -l) + 1`
-		local url_str=`echo "$urllist"|awk -v i=$(rand 1 $url_number) '{print $i}'`
-		#leo modified -m 15可以减少日志报错，但是可能延长响应时间会占用资源
-		#echo `curl -k -s -w "%{http_code}" -m 5 ${url_str} -A "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36" -o /dev/null`
-		echo `curl -k -s -w "%{http_code}" -m 15 ${url_str} -A "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36" -o /dev/null`
-	}
-	local check=`getcheck`
-	while [ -z "$check" ] || [ "$check" -ne "200" ]; do
-		local check=`getcheck`
-		if [ ! -z "$check" ] && [ "$check" -eq "200" ]; then
-			[ ! -z "$network_enable" ] && [ "$network_enable" -eq "404" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【网络状态】网络恢复正常.." >> ${logfile}
-			local network_enable="200"
-		else
-			#leo 
-			#[ -z "$network_enable" ] || [ "$network_enable" -eq "200" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】当前网络不通！停止检测！ " >> ${logfile}
-			local network_enable="404"
-			[ -z "$network_err_time" ] && network_err_time=`date +%s`
-			if [ ! -z "$network_err_event" ] && [ "$((`date +%s`-$network_err_time))" -ge "600" ]; then
-				> ${dir}send_enable.lock && pushbot_first && deltemp
-				geterrdevicealiases
-				if [ "$?" -eq "0" ]; then
-					[ -f /usr/bin/pushbot/autoreboot_count ] && retry_count=`cat /usr/bin/pushbot/autoreboot_count` && rm -f /usr/bin/pushbot/autoreboot_count >/dev/null 2>&1
-					[ ! -z ${retry_count} ] && retry_count=0;retry_count=`expr $retry_count + 1`
-					if [ "$network_err_event" -eq "1" ] ;then
-						if [ "$retry_count" -lt "3" ] ;then
-							echo "$retry_count" > /usr/bin/pushbot/autoreboot_count
-							echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】正在尝试重启路由，当前第 $retry_count 次 " >> ${logfile}
-							cat ${logfile} > /usr/bin/pushbot/errlog
-							sleep 2 && reboot && exit
-						fi
-						[ "$retry_count" -eq "3" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】已经重启路由2次，修复失败，请主人自行修复哦" >> ${logfile}
-					elif [ "$network_err_event" -eq "2" ] ;then
-						[ "$retry_count" -lt "3" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】正在尝试重启网络，当前第 $retry_count 次 " >> ${logfile} && ifup wan >/dev/null 2>&1
-						[ "$retry_count" -eq "3" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】已经重启网络2次，修复失败，请主人自行修复哦 " >> ${logfile}
-					elif [ "$network_err_event" -eq "3" ] ;then
-						if [ "$retry_count" -eq "1" ] ;then
-							echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】正在尝试修复网络，当前第 1 次，重启网络服务中 " >> ${logfile} && network_restart
-						elif [ "$retry_count" -eq "2" ] ;then
-							echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】正在尝试修复网络，当前第 2 次，关闭可能造成网络断开的软件" >> ${logfile}
-							[ `uci get koolproxy.@global[0].enabled 2>/dev/null` -eq "1" ] && [ `uci get koolproxy.@global[0].koolproxy_mode 2>/dev/null` -eq "1" ] && /etc/init.d/koolproxy stop >/dev/null 2>&1
-							[ `uci get adbyby.@adbyby[0].enable 2>/dev/null` -eq "1" ] && [ `uci get adbyby.@adbyby[0].wan_mode 2>/dev/null` -eq "0" ] && /etc/init.d/adbyby stop >/dev/null 2>&1
-							[ `uci get passwall.@global[0].enabled 2>/dev/null` -eq "1" ] && [ `uci get passwall.@global[0].proxy_mode 2>/dev/null|grep global` ] && /etc/init.d/koolproxy stop >/dev/null 2>&1
-							local shadowsocksr_enabled=`uci get shadowsocksr.@global[0].global_server 2>/dev/null|grep nil`
-							local shadowsocksr_run_mode=`uci get shadowsocksr.@global[0].run_mode 2>/dev/null|grep all`
-							[ -z "$shadowsocksr_enabled" ] && [ ! -z "$shadowsocksr_run_mode" ] && /etc/init.d/shadowsocksr stop >/dev/null 2>&1
-							sleep 60 && network_restart
-						elif [ "$retry_count" -eq "3" ] ;then
-							echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】正在尝试修复网络，当前第 3 次，备份设置项，并修改相关设置" >> ${logfile}
-							mkdir -p /usr/bin/pushbot/configbak
-							cp -p -f /etc/config/network /usr/bin/pushbot/configbak/network
-							cp -p -f /etc/config/dhcp /usr/bin/pushbot/configbak/dhcp
-							cp -p -f /etc/config/firewall /usr/bin/pushbot/configbak/firewall
-							cp -p -f /etc/firewall.user /usr/bin/pushbot/configbak/firewall.user
-							uci set network.wan.peerdns='0'
-							uci delete network.wan.dns
-							uci add_list network.wan.dns='223.5.5.5'
-							uci add_list network.wan.dns='119.29.29.29'
-							uci delete network.wan.mtu
-							uci commit network
-							uci set dhcp.@dnsmasq[0].port='53'
-							uci set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.auto'
-							uci delete dhcp.@dnsmasq[0].server
-							uci delete dhcp.@dnsmasq[0].noresolv
-							uci commit dhcp
-							uci delete firewall.redirect
-							>/etc/firewall.user
-							uci commit firewall
-							sleep 60 && network_restart
-						elif [ "$retry_count" -eq "4" ] ;then
-							echo "$retry_count" > /usr/bin/pushbot/autoreboot_count
-							cat ${logfile} > /usr/bin/pushbot/errlog
-							sleep 2 && reboot && exit
-						elif [ "$retry_count" -eq "5" ] ;then
-							echo "$retry_count" > /usr/bin/pushbot/autoreboot_count
-							echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！！】修复失败，还原设置中，请自行检查网络设置" >> ${logfile}
-							cp -p -f /usr/bin/pushbot/configbak/network /etc/config/network
-							cp -p -f /usr/bin/pushbot/configbak/dhcp /etc/config/dhcp
-							cp -p -f /usr/bin/pushbot/configbak/firewall /etc/config/firewall
-							cp -p -f /usr/bin/pushbot/configbak/firewall.user /etc/firewall.user
-							cat ${logfile} > /usr/bin/pushbot/errlog
-							sleep 2 && reboot && exit
-						fi
-					fi
-				fi
-			elif [ -f /usr/bin/pushbot/autoreboot_count ]; then
-				network_err_time=`expr $network_err_time - 600` && sleep 60
-			fi
-			enable_detection
-			sleep $sleeptime
-		fi
-	continue
-	done
-	rm -f /usr/bin/pushbot/autoreboot_count >/dev/null 2>&1
+    # 已禁用网络自动修复
+    return 0
 }
+
 
 # 检测 ip 状况
 function ip_changes(){
